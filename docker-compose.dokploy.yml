@@ -1,0 +1,291 @@
+services:
+  nginx:
+    restart: unless-stopped
+    image: nginx:1.31.6-trixie
+    command: ["nginx", "-g", "daemon off; worker_shutdown_timeout 5s;"]
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+    container_name: nginx
+    ports:
+    - "${REVERSEPROXY_HTTP_PORT:-80}:80"
+    volumes:
+    - "nginx_conf:/etc/nginx/conf.d"
+    - "nginx_vhost:/etc/nginx/vhost.d"
+    - "nginx_html:/usr/share/nginx/html"
+    - "./nginx:/etc/nginx/btcpay-routes:ro"
+    links:
+    - "lnd_bitcoin"
+  nginx-gen:
+    restart: unless-stopped
+    image: btcpayserver/docker-gen:0.10.7
+    container_name: nginx-gen
+    environment:
+    - DEFAULT_HOST=${REVERSEPROXY_DEFAULT_HOST:-none}
+    - RESOLVERS=127.0.0.11 valid=30s ipv6=off
+    - TRUST_DOWNSTREAM_PROXY=${TRUST_DOWNSTREAM_PROXY:-false}
+    volumes:
+    - "/var/run/docker.sock:/tmp/docker.sock:ro"
+    - "./nginx:/etc/docker-gen/templates:ro"
+    - "nginx_conf:/etc/nginx/conf.d"
+    - "nginx_vhost:/etc/nginx/vhost.d"
+    - "nginx_html:/usr/share/nginx/html"
+    - "tor_servicesdir:/var/lib/tor/hidden_services:ro"
+    entrypoint: /usr/local/bin/docker-gen -notify-sighup nginx -watch -wait 5s:30s /etc/docker-gen/templates/nginx.tmpl /etc/nginx/conf.d/default.conf
+    links:
+    - btcpayserver
+    - nginx
+    - "lnd_bitcoin"
+  btcpayserver:
+    restart: unless-stopped
+    container_name: generated_btcpayserver_1
+    image: ${BTCPAY_IMAGE:-btcpayserver/btcpayserver:2.4.4}
+    expose:
+    - "49392"
+    environment:
+      BTCPAY_POSTGRES: User ID=postgres;Host=postgres;Port=5432;Application Name=btcpayserver;Database=btcpayserver${NBITCOIN_NETWORK:-regtest}
+      BTCPAY_NETWORK: ${NBITCOIN_NETWORK:-regtest}
+      BTCPAY_BIND: 0.0.0.0:49392
+      BTCPAY_ROOTPATH: ${BTCPAY_ROOTPATH:-/}
+      BTCPAY_DEBUGLOG: btcpay.log
+      BTCPAY_UPDATEURL: https://api.github.com/repos/btcpayserver/btcpayserver/releases/latest
+      BTCPAY_DOCKERDEPLOYMENT: "true"
+      BTCPAY_NODEFAULTCHAIN: "true"
+      VIRTUAL_NETWORK: nginx-proxy
+      VIRTUAL_PORT: 49392
+      VIRTUAL_HOST: ${BTCPAY_HOST},${BTCPAY_ADDITIONAL_HOSTS}
+      VIRTUAL_HOST_NAME: "btcpay"
+      SSL_POLICY: Mozilla-Intermediate
+      LETSENCRYPT_HOST: ${BTCPAY_LETSENCRYPT_HOSTS-${BTCPAY_HOST},${BTCPAY_ADDITIONAL_HOSTS}}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-<no value>}
+      HIDDENSERVICE_NAME: BTCPayServer
+      HIDDENSERVICE_REVERSEPROXY: nginx
+      BTCPAY_TORRCFILE: /usr/local/etc/tor/torrc-2
+      BTCPAY_SOCKSENDPOINT: tor:9050
+      BTCPAY_CHAINS: "btc"
+      BTCPAY_BTCEXPLORERURL: http://nbxplorer:32838/
+      BTCPAY_EXPLORERPOSTGRES: User ID=postgres;Host=postgres;Port=5432;Application Name=btcpayserver;MaxPoolSize=80;Database=nbxplorer${NBITCOIN_NETWORK:-regtest}
+      BTCPAY_BTCLIGHTNING: "type=lnd-rest;server=http://lnd_bitcoin:8080/;macaroonfilepath=/etc/lnd_bitcoin/admin.macaroon;allowinsecure=true"
+      BTCPAY_BTCEXTERNALRTL: "server=/rtl/api/authenticate/cookie;cookiefile=/etc/lnd_bitcoin_rtl/.cookie"
+      BTCPAY_BTCEXTERNALLNDGRPC: "server=/;macaroonfilepath=/etc/lnd_bitcoin/admin.macaroon;macaroondirectorypath=/etc/lnd_bitcoin"
+      BTCPAY_BTCEXTERNALLNDREST: "server=/lnd-rest/btc/;macaroonfilepath=/etc/lnd_bitcoin/admin.macaroon;macaroondirectorypath=/etc/lnd_bitcoin"
+      BTCPAY_BTCEXTERNALLNDSEEDBACKUP: "/etc/lnd_bitcoin/data/chain/bitcoin/${NBITCOIN_NETWORK:-regtest}/walletunlock.json"
+    links:
+    - postgres
+    - lnd_bitcoin
+    volumes:
+    - "btcpay_datadir:/datadir"
+    - "btcpay_pluginsdir:/root/.btcpayserver/Plugins"
+    - "tor_servicesdir:/var/lib/tor/hidden_services:ro"
+    - "tor_torrcdir:/usr/local/etc/tor/:ro"
+    - "nbxplorer_datadir:/root/.nbxplorer"
+    - "lnd_bitcoin_datadir:/etc/lnd_bitcoin:ro"
+    - "lnd_bitcoin_rtl_datadir:/etc/lnd_bitcoin_rtl"
+  bitcoind:
+    restart: unless-stopped
+    container_name: btcpayserver_bitcoind
+    image: btcpayserver/bitcoin:31.1-1
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      BITCOIN_NETWORK: ${NBITCOIN_NETWORK:-regtest}
+      CREATE_WALLET: "false"
+      BITCOIN_WALLETDIR: "/walletdata"
+      BITCOIN_EXTRA_ARGS: |-
+        rpcport=43782
+        rpcbind=0.0.0.0:43782
+        rpcallowip=0.0.0.0/0
+        port=39388
+        whitelist=0.0.0.0/0
+        maxmempool=500
+
+        onion=tor:9050
+
+        mempoolfullrbf=1
+        zmqpubrawblock=tcp://0.0.0.0:28332
+        zmqpubrawtx=tcp://0.0.0.0:28333
+        zmqpubhashblock=tcp://0.0.0.0:28334
+
+        prune=50000
+      HIDDENSERVICE_NAME: BTC-P2P,BTC-RPC
+      BTC-P2P_HIDDENSERVICE_VIRTUAL_PORT: 8333
+      BTC-P2P_HIDDENSERVICE_PORT: 39388
+      BTC-RPC_HIDDENSERVICE_VIRTUAL_PORT: 8332
+      BTC-RPC_HIDDENSERVICE_PORT: 43782
+      BITCOIN_RPCUSERS: btcrpc,lnd
+    expose:
+    - "43782"
+    - "39388"
+    - "28332"
+    - "28333"
+    - "28334"
+    volumes:
+    - "bitcoin_datadir:/data"
+    - "bitcoin_wallet_datadir:/walletdata"
+    - "tor_datadir:/home/tor/.tor:ro"
+    links:
+    - tor
+  tor:
+    restart: unless-stopped
+    image: btcpayserver/tor:0.4.9.13
+    container_name: tor
+    environment:
+      TOR_PASSWORD_FILE: /run/secrets/tor_password
+      TOR_ADDITIONAL_CONFIG: /usr/local/etc/tor/torrc-2
+      TOR_EXTRA_ARGS: |
+        CookieAuthentication 1
+    expose:
+    - "9050"
+    - "9051"
+    volumes:
+    - "tor_datadir:/home/tor/.tor"
+    - "tor_torrcdir:/usr/local/etc/tor"
+    - "tor_servicesdir:/var/lib/tor/hidden_services"
+    secrets:
+    - tor_password
+  tor-gen:
+    restart: unless-stopped
+    image: btcpayserver/docker-gen:0.10.7
+    container_name: tor-gen
+    volumes:
+    - "/var/run/docker.sock:/tmp/docker.sock:ro"
+    - "./Generated/torrc.tmpl:/etc/docker-gen/templates/torrc.tmpl:ro"
+    - "tor_torrcdir:/usr/local/etc/tor"
+    entrypoint: /usr/local/bin/docker-gen -notify-sighup tor -watch -wait 5s:30s /etc/docker-gen/templates/torrc.tmpl /usr/local/etc/tor/torrc-2
+    links:
+    - tor
+  lnd_bitcoin:
+    image: btcpayserver/lnd:v0.21.3-beta-2
+    container_name: btcpayserver_lnd_bitcoin
+    restart: unless-stopped
+    environment:
+      LND_CHAIN: "btc"
+      LND_EXTERNALIP: ${BTCPAY_ANNOUNCEABLE_HOST}
+      LND_PORT: 9735
+      LND_ALIAS: ${LIGHTNING_ALIAS}
+      LND_ENVIRONMENT: "${NBITCOIN_NETWORK:-regtest}"
+      LND_READY_FILE: /root/.nbxplorer/btc_fully_synched
+      LND_REST_LISTEN_HOST: http://lnd_bitcoin:8080
+      LND_HOST_FOR_LOOP: 127.0.0.1:10009
+      RPCUSER_FILE: /deps/.bitcoin/RPCUsers/lnd
+      LND_EXTRA_ARGS: |
+        restlisten=lnd_bitcoin:8080
+        rpclisten=127.0.0.1:10008
+        rpclisten=lnd_bitcoin:10009
+        rpclisten=127.0.0.1:10009
+        bitcoin.node=bitcoind
+        bitcoind.rpchost=bitcoind:43782
+        bitcoind.rpcuser=lnd
+        bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+        bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+        adminmacaroonpath=/data/admin.macaroon
+        invoicemacaroonpath=/data/invoice.macaroon
+        readonlymacaroonpath=/data/readonly.macaroon
+        tlsextradomain=lnd_bitcoin
+        no-rest-tls=1
+        protocol.wumbo-channels=1
+
+        tor.active=1
+        tor.skip-proxy-for-clearnet-targets=1
+        tor.socks=tor:9050
+      HIDDENSERVICE_NAME: lnd
+      HIDDENSERVICE_PORT: 9735
+      LND_HIDDENSERVICE_HOSTNAME_FILE: /var/lib/tor/hidden_services/lnd/hostname
+    ports:
+    - "9735:9735"
+    expose:
+    - "8080"
+    - "8081"
+    - "10009"
+    - "9735"
+    volumes:
+    - "lnd_bitcoin_datadir:/data"
+    - "lndloop_bitcoin_datadir:/root/.loop/${NBITCOIN_NETWORK:-regtest}"
+    - "bitcoin_datadir:/deps/.bitcoin"
+    - "nbxplorer_datadir:/root/.nbxplorer"
+    - "tor_datadir:/home/tor/.tor:ro"
+    - "tor_servicesdir:/var/lib/tor/hidden_services:ro"
+    links:
+    - bitcoind
+    - tor
+  postgres:
+    restart: unless-stopped
+    container_name: generated_postgres_1
+    shm_size: 256mb
+    image: btcpayserver/postgres:18.6
+    command: ["-c", "random_page_cost=1.0", "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+    - "postgres_datadir:/var/lib/postgresql"
+  nbxplorer:
+    restart: unless-stopped
+    container_name: generated_nbxplorer_1
+    image: nicolasdorier/nbxplorer:2.6.18
+    expose:
+    - "32838"
+    environment:
+      NBXPLORER_NETWORK: ${NBITCOIN_NETWORK:-regtest}
+      NBXPLORER_BIND: 0.0.0.0:32838
+      NBXPLORER_TRIMEVENTS: 10000
+      NBXPLORER_SIGNALFILESDIR: /datadir
+      NBXPLORER_POSTGRES: User ID=postgres;Host=postgres;Port=5432;Application Name=nbxplorer;MaxPoolSize=20;Database=nbxplorer${NBITCOIN_NETWORK:-regtest}
+      NBXPLORER_CHAINS: "btc"
+      NBXPLORER_BTCRPCURL: http://bitcoind:43782/
+      NBXPLORER_BTCNODEENDPOINT: bitcoind:39388
+    links:
+    - postgres
+    volumes:
+    - "nbxplorer_datadir:/datadir"
+    - "bitcoin_datadir:/root/.bitcoin"
+  bitcoin_rtl:
+    image: shahanafarooqui/rtl:v0.15.13
+    container_name: generated_lnd_bitcoin_rtl_1
+    restart: unless-stopped
+    environment:
+      LND_SERVER_URL: http://lnd_bitcoin:8080/v1
+      MACAROON_PATH: /etc/lnd
+      SWAP_SERVER_URL: https://lnd_bitcoin:8081/v1
+      SWAP_MACAROON_PATH: /etc/lndloop
+      RTL_CONFIG_PATH: /data/
+      LND_CONFIG_PATH: /etc/lnd/lnd.conf
+      BITCOIND_CONFIG_PATH: /etc/bitcoin/bitcoin.conf
+      RTL_SSO: 1
+      RTL_COOKIE_PATH: /data/.cookie
+      LOGOUT_REDIRECT_LINK: /server/services
+    volumes:
+    - "bitcoin_datadir:/etc/bitcoin:ro"
+    - "lnd_bitcoin_datadir:/etc/lnd:ro"
+    - "lnd_bitcoin_datadir:/root/.lnd:ro"
+    - "lndloop_bitcoin_datadir:/etc/lndloop:ro"
+    - "lnd_bitcoin_rtl_datadir:/data"
+    expose:
+    - "3000"
+    links:
+    - lnd_bitcoin
+volumes:
+  nginx_conf: 
+  nginx_vhost: 
+  nginx_html: 
+  nginx_certs: 
+  btcpay_datadir: 
+  btcpay_pluginsdir: 
+  tor_datadir: 
+  tor_torrcdir: 
+  tor_servicesdir: 
+  postgres_datadir: 
+  bitcoin_datadir: 
+  bitcoin_wallet_datadir: 
+  nbxplorer_datadir: 
+  lnd_bitcoin_datadir: 
+  lndloop_bitcoin_datadir: 
+  lnd_bitcoin_rtl_datadir: 
+configs: {}
+networks: {}
+secrets:
+  tor_password:
+    file: ../files/tor_password
