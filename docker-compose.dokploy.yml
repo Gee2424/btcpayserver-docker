@@ -95,7 +95,7 @@ services:
       BITCOIN_NETWORK: ${NBITCOIN_NETWORK:-regtest}
       CREATE_WALLET: "false"
       BITCOIN_WALLETDIR: "/walletdata"
-      BITCOIN_EXTRA_ARGS: |-
+      BITCOIN_EXTRA_ARGS: |
         rpcport=43782
         rpcbind=0.0.0.0:43782
         rpcallowip=0.0.0.0/0
@@ -111,6 +111,7 @@ services:
         zmqpubhashblock=tcp://0.0.0.0:28334
 
         prune=50000
+        dbcache=1024
       HIDDENSERVICE_NAME: BTC-P2P,BTC-RPC
       BTC-P2P_HIDDENSERVICE_VIRTUAL_PORT: 8333
       BTC-P2P_HIDDENSERVICE_PORT: 39388

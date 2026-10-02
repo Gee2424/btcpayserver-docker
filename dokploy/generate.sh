@@ -11,7 +11,7 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 export BTCPAYGEN_CRYPTO1="${BTCPAYGEN_CRYPTO1:-btc}"
 export BTCPAYGEN_REVERSEPROXY="nginx"
 export BTCPAYGEN_LIGHTNING="${BTCPAYGEN_LIGHTNING:-lnd}"
-export BTCPAYGEN_ADDITIONAL_FRAGMENTS="${BTCPAYGEN_ADDITIONAL_FRAGMENTS:-opt-save-storage-s}"
+export BTCPAYGEN_ADDITIONAL_FRAGMENTS="${BTCPAYGEN_ADDITIONAL_FRAGMENTS:-opt-save-storage-s;opt-more-memory}"
 # Traefik terminates TLS, and the host SSH integration is not wanted on Dokploy.
 export BTCPAYGEN_EXCLUDE_FRAGMENTS="${BTCPAYGEN_EXCLUDE_FRAGMENTS:-nginx-https;btcpay-host}"
 
