@@ -41,7 +41,7 @@ services:
   btcpayserver:
     restart: unless-stopped
     container_name: generated_btcpayserver_1
-    image: ${BTCPAY_IMAGE:-btcpayserver/btcpayserver:2.4.4}
+    image: ${BTCPAY_IMAGE:-btcpayserver/btcpayserver:2.4.5}
     expose:
     - "49392"
     environment:
@@ -60,10 +60,6 @@ services:
       SSL_POLICY: Mozilla-Intermediate
       LETSENCRYPT_HOST: ${BTCPAY_LETSENCRYPT_HOSTS-${BTCPAY_HOST},${BTCPAY_ADDITIONAL_HOSTS}}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-<no value>}
-      HIDDENSERVICE_NAME: BTCPayServer
-      HIDDENSERVICE_REVERSEPROXY: nginx
-      BTCPAY_TORRCFILE: /usr/local/etc/tor/torrc-2
-      BTCPAY_SOCKSENDPOINT: tor:9050
       BTCPAY_CHAINS: "btc"
       BTCPAY_BTCEXPLORERURL: http://nbxplorer:32838/
       BTCPAY_EXPLORERPOSTGRES: User ID=postgres;Host=postgres;Port=5432;Application Name=btcpayserver;MaxPoolSize=80;Database=nbxplorer${NBITCOIN_NETWORK:-regtest}
@@ -72,17 +68,31 @@ services:
       BTCPAY_BTCEXTERNALLNDGRPC: "server=/;macaroonfilepath=/etc/lnd_bitcoin/admin.macaroon;macaroondirectorypath=/etc/lnd_bitcoin"
       BTCPAY_BTCEXTERNALLNDREST: "server=/lnd-rest/btc/;macaroonfilepath=/etc/lnd_bitcoin/admin.macaroon;macaroondirectorypath=/etc/lnd_bitcoin"
       BTCPAY_BTCEXTERNALLNDSEEDBACKUP: "/etc/lnd_bitcoin/data/chain/bitcoin/${NBITCOIN_NETWORK:-regtest}/walletunlock.json"
+      HIDDENSERVICE_NAME: BTCPayServer
+      HIDDENSERVICE_REVERSEPROXY: nginx
+      BTCPAY_TORRCFILE: /usr/local/etc/tor/torrc-2
+      BTCPAY_SOCKSENDPOINT: tor:9050
     links:
     - postgres
     - lnd_bitcoin
     volumes:
     - "btcpay_datadir:/datadir"
     - "btcpay_pluginsdir:/root/.btcpayserver/Plugins"
-    - "tor_servicesdir:/var/lib/tor/hidden_services:ro"
-    - "tor_torrcdir:/usr/local/etc/tor/:ro"
     - "nbxplorer_datadir:/root/.nbxplorer"
     - "lnd_bitcoin_datadir:/etc/lnd_bitcoin:ro"
     - "lnd_bitcoin_rtl_datadir:/etc/lnd_bitcoin_rtl"
+    - "tor_servicesdir:/var/lib/tor/hidden_services:ro"
+    - "tor_torrcdir:/usr/local/etc/tor/:ro"
+  postgres:
+    restart: unless-stopped
+    container_name: generated_postgres_1
+    shm_size: 256mb
+    image: btcpayserver/postgres:18.6
+    command: ["-c", "random_page_cost=1.0", "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+    - "postgres_datadir:/var/lib/postgresql"
   bitcoind:
     restart: unless-stopped
     container_name: btcpayserver_bitcoind
@@ -103,8 +113,6 @@ services:
         whitelist=0.0.0.0/0
         maxmempool=500
 
-        onion=tor:9050
-
         mempoolfullrbf=1
         zmqpubrawblock=tcp://0.0.0.0:28332
         zmqpubrawtx=tcp://0.0.0.0:28333
@@ -112,12 +120,14 @@ services:
 
         prune=50000
         dbcache=1024
+
+        onion=tor:9050
+      BITCOIN_RPCUSERS: lnd,btcrpc
       HIDDENSERVICE_NAME: BTC-P2P,BTC-RPC
       BTC-P2P_HIDDENSERVICE_VIRTUAL_PORT: 8333
       BTC-P2P_HIDDENSERVICE_PORT: 39388
       BTC-RPC_HIDDENSERVICE_VIRTUAL_PORT: 8332
       BTC-RPC_HIDDENSERVICE_PORT: 43782
-      BITCOIN_RPCUSERS: btcrpc,lnd
     expose:
     - "43782"
     - "39388"
@@ -130,35 +140,26 @@ services:
     - "tor_datadir:/home/tor/.tor:ro"
     links:
     - tor
-  tor:
+  nbxplorer:
     restart: unless-stopped
-    image: btcpayserver/tor:0.4.9.13
-    container_name: tor
-    environment:
-      TOR_PASSWORD_FILE: /run/secrets/tor_password
-      TOR_ADDITIONAL_CONFIG: /usr/local/etc/tor/torrc-2
-      TOR_EXTRA_ARGS: |
-        CookieAuthentication 1
+    container_name: generated_nbxplorer_1
+    image: nicolasdorier/nbxplorer:2.6.19
     expose:
-    - "9050"
-    - "9051"
-    volumes:
-    - "tor_datadir:/home/tor/.tor"
-    - "tor_torrcdir:/usr/local/etc/tor"
-    - "tor_servicesdir:/var/lib/tor/hidden_services"
-    secrets:
-    - tor_password
-  tor-gen:
-    restart: unless-stopped
-    image: btcpayserver/docker-gen:0.10.7
-    container_name: tor-gen
-    volumes:
-    - "/var/run/docker.sock:/tmp/docker.sock:ro"
-    - "./Generated/torrc.tmpl:/etc/docker-gen/templates/torrc.tmpl:ro"
-    - "tor_torrcdir:/usr/local/etc/tor"
-    entrypoint: /usr/local/bin/docker-gen -notify-sighup tor -watch -wait 5s:30s /etc/docker-gen/templates/torrc.tmpl /usr/local/etc/tor/torrc-2
+    - "32838"
+    environment:
+      NBXPLORER_NETWORK: ${NBITCOIN_NETWORK:-regtest}
+      NBXPLORER_BIND: 0.0.0.0:32838
+      NBXPLORER_TRIMEVENTS: 10000
+      NBXPLORER_SIGNALFILESDIR: /datadir
+      NBXPLORER_POSTGRES: User ID=postgres;Host=postgres;Port=5432;Application Name=nbxplorer;MaxPoolSize=20;Database=nbxplorer${NBITCOIN_NETWORK:-regtest}
+      NBXPLORER_CHAINS: "btc"
+      NBXPLORER_BTCRPCURL: http://bitcoind:43782/
+      NBXPLORER_BTCNODEENDPOINT: bitcoind:39388
     links:
-    - tor
+    - postgres
+    volumes:
+    - "nbxplorer_datadir:/datadir"
+    - "bitcoin_datadir:/root/.bitcoin"
   lnd_bitcoin:
     image: btcpayserver/lnd:v0.21.3-beta-2
     container_name: btcpayserver_lnd_bitcoin
@@ -213,36 +214,6 @@ services:
     links:
     - bitcoind
     - tor
-  postgres:
-    restart: unless-stopped
-    container_name: generated_postgres_1
-    shm_size: 256mb
-    image: btcpayserver/postgres:18.6
-    command: ["-c", "random_page_cost=1.0", "-c", "shared_preload_libraries=pg_stat_statements"]
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
-    volumes:
-    - "postgres_datadir:/var/lib/postgresql"
-  nbxplorer:
-    restart: unless-stopped
-    container_name: generated_nbxplorer_1
-    image: nicolasdorier/nbxplorer:2.6.18
-    expose:
-    - "32838"
-    environment:
-      NBXPLORER_NETWORK: ${NBITCOIN_NETWORK:-regtest}
-      NBXPLORER_BIND: 0.0.0.0:32838
-      NBXPLORER_TRIMEVENTS: 10000
-      NBXPLORER_SIGNALFILESDIR: /datadir
-      NBXPLORER_POSTGRES: User ID=postgres;Host=postgres;Port=5432;Application Name=nbxplorer;MaxPoolSize=20;Database=nbxplorer${NBITCOIN_NETWORK:-regtest}
-      NBXPLORER_CHAINS: "btc"
-      NBXPLORER_BTCRPCURL: http://bitcoind:43782/
-      NBXPLORER_BTCNODEENDPOINT: bitcoind:39388
-    links:
-    - postgres
-    volumes:
-    - "nbxplorer_datadir:/datadir"
-    - "bitcoin_datadir:/root/.bitcoin"
   bitcoin_rtl:
     image: shahanafarooqui/rtl:v0.15.13
     container_name: generated_lnd_bitcoin_rtl_1
@@ -268,6 +239,35 @@ services:
     - "3000"
     links:
     - lnd_bitcoin
+  tor:
+    restart: unless-stopped
+    image: btcpayserver/tor:0.4.9.13
+    container_name: tor
+    environment:
+      TOR_PASSWORD_FILE: /run/secrets/tor_password
+      TOR_ADDITIONAL_CONFIG: /usr/local/etc/tor/torrc-2
+      TOR_EXTRA_ARGS: |
+        CookieAuthentication 1
+    expose:
+    - "9050"
+    - "9051"
+    volumes:
+    - "tor_datadir:/home/tor/.tor"
+    - "tor_torrcdir:/usr/local/etc/tor"
+    - "tor_servicesdir:/var/lib/tor/hidden_services"
+    secrets:
+    - tor_password
+  tor-gen:
+    restart: unless-stopped
+    image: btcpayserver/docker-gen:0.10.7
+    container_name: tor-gen
+    volumes:
+    - "/var/run/docker.sock:/tmp/docker.sock:ro"
+    - "./Generated/torrc.tmpl:/etc/docker-gen/templates/torrc.tmpl:ro"
+    - "tor_torrcdir:/usr/local/etc/tor"
+    entrypoint: /usr/local/bin/docker-gen -notify-sighup tor -watch -wait 5s:30s /etc/docker-gen/templates/torrc.tmpl /usr/local/etc/tor/torrc-2
+    links:
+    - tor
 volumes:
   nginx_conf: 
   nginx_vhost: 
@@ -275,9 +275,6 @@ volumes:
   nginx_certs: 
   btcpay_datadir: 
   btcpay_pluginsdir: 
-  tor_datadir: 
-  tor_torrcdir: 
-  tor_servicesdir: 
   postgres_datadir: 
   bitcoin_datadir: 
   bitcoin_wallet_datadir: 
@@ -285,6 +282,9 @@ volumes:
   lnd_bitcoin_datadir: 
   lndloop_bitcoin_datadir: 
   lnd_bitcoin_rtl_datadir: 
+  tor_datadir: 
+  tor_torrcdir: 
+  tor_servicesdir: 
 configs: {}
 networks: {}
 secrets:
